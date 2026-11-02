@@ -130,6 +130,7 @@ static SDL_Joystick* g_joystick = NULL;
 #ifdef GBRT_PLATFORM_MIAUI
 #include "la_extra_buttons.h"
 #include "la_overlay.h"
+#include <unistd.h>   /* fsync, sync */
 #endif
 
 /* ============================================================================
@@ -1016,10 +1017,35 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
                   g_frame_count, has_content, framebuffer[0]);
     }
     
+#ifdef GBRT_PLATFORM_MIAUI
+    /* Write the battery RAM as soon as the game has finished changing it
+     * (RAM disabled again), instead of every 5 s: a save is then on disk
+     * a frame after the game wrote it. */
+    if (g_ctx && g_ctx->eram && g_ctx->eram_size) {
+        static uint8_t* shadow;
+        static size_t shadow_size;
+        if (shadow_size != g_ctx->eram_size) {
+            free(shadow);
+            shadow = (uint8_t*)malloc(g_ctx->eram_size);
+            shadow_size = shadow ? g_ctx->eram_size : 0;
+            if (shadow) memcpy(shadow, g_ctx->eram, shadow_size);   /* as loaded */
+        }
+        static int dirty_frames;          /* changed, RAM still enabled: save anyway after ~5 s */
+        if (shadow && memcmp(shadow, g_ctx->eram, shadow_size) != 0) {
+            if (!g_ctx->ram_enabled || ++dirty_frames >= 300) {
+                if (gb_context_save_ram(g_ctx)) memcpy(shadow, g_ctx->eram, shadow_size);
+                dirty_frames = 0;
+            }
+        } else {
+            dirty_frames = 0;
+        }
+    }
+#else
     /* Auto-save ERAM every ~5 seconds (300 frames at 60fps) */
     if (g_ctx && g_frame_count % 300 == 0) {
         gb_context_save_ram(g_ctx);
     }
+#endif
 
     /* Auto-save state every 5 minutes (18000 frames at 60fps) */
     if (g_ctx && menu_gui_get_auto_save() && g_frame_count > 0 && g_frame_count % 18000 == 0) {
@@ -1572,7 +1598,20 @@ static bool sdl_save_battery_ram(GBContext* ctx, const char* rom_name, const voi
     (void)ctx;
     char filename[512];
     sdl_get_save_path(filename, sizeof(filename), rom_name);
-
+#ifdef GBRT_PLATFORM_MIAUI
+    /* Write a temp file, flush it to the SD card, then rename over the old
+     * save: a power-off mid-write can't leave a truncated .sav behind. */
+    char tmp[530];
+    snprintf(tmp, sizeof tmp, "%s.tmp", filename);
+    FILE* f = fopen(tmp, "wb");
+    if (!f) return false;
+    size_t written = fwrite(data, 1, size, f);
+    bool ok = written == size && fflush(f) == 0 && fsync(fileno(f)) == 0;
+    fclose(f);
+    if (!ok || rename(tmp, filename) != 0) { remove(tmp); return false; }
+    sync();
+    return true;
+#else
     FILE* f = fopen(filename, "wb");
     if (!f) return false;
 
@@ -1580,6 +1619,7 @@ static bool sdl_save_battery_ram(GBContext* ctx, const char* rom_name, const voi
     fclose(f);
 
     return written == size;
+#endif
 }
 
 /* MBC3 RTC sidecar — stored next to the .sav as a 48-byte .rtc file in

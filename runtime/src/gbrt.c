@@ -83,8 +83,10 @@ GBContext* gb_context_create(const GBConfig* config) {
 void gb_context_destroy(GBContext* ctx) {
     if (!ctx) return;
     
-    /* Save RAM before destroying if available */
-    if (ctx->eram && ctx->ram_enabled && ctx->callbacks.save_battery_ram) {
+    /* Save RAM before destroying if available. Not only while RAM is
+     * enabled: games disable it right after writing the save, so the last
+     * save would be lost on a quick exit. */
+    if (ctx->eram && ctx->callbacks.save_battery_ram) {
         gb_context_save_ram(ctx);
     }
     

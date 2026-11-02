@@ -1120,17 +1120,19 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         present_dst = &android_dst;
     }
 #elif defined(GBRT_PLATFORM_MIAUI)
-    /* Largest integer scale that fits the panel (3x = 480x432 on 640x480),
-     * centred, so pixels stay square and sharp. */
+    /* As large as the panel allows with the 10:9 aspect (533x480 on 640x480),
+     * centred; the port scales it sharp-bilinear (miaui/la_overlay.c). */
     static SDL_Rect miaui_dst;
     {
         int ow = 640, oh = 480;
         SDL_GetRendererOutputSize(g_renderer, &ow, &oh);
-        int s = ow / GB_SCREEN_WIDTH;
-        if (oh / GB_SCREEN_HEIGHT < s) s = oh / GB_SCREEN_HEIGHT;
-        if (s < 1) s = 1;
-        miaui_dst.w = GB_SCREEN_WIDTH * s;
-        miaui_dst.h = GB_SCREEN_HEIGHT * s;
+        if (ow * GB_SCREEN_HEIGHT > oh * GB_SCREEN_WIDTH) {
+            miaui_dst.h = oh;
+            miaui_dst.w = oh * GB_SCREEN_WIDTH / GB_SCREEN_HEIGHT;
+        } else {
+            miaui_dst.w = ow;
+            miaui_dst.h = ow * GB_SCREEN_HEIGHT / GB_SCREEN_WIDTH;
+        }
         miaui_dst.x = (ow - miaui_dst.w) / 2;
         miaui_dst.y = (oh - miaui_dst.h) / 2;
         present_dst = &miaui_dst;
@@ -1189,6 +1191,9 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         SDL_RenderCopy(g_renderer, g_texture_2x, NULL, present_dst);
     } else {
         /* Nearest or Bilinear: use 1x texture */
+#ifdef GBRT_PLATFORM_MIAUI
+        la_overlay_patch_fb(g_ctx, fb_work);   /* status bar B/A -> Y/X */
+#endif
         void* pixels;
         int pitch;
         SDL_LockTexture(g_texture, NULL, &pixels, &pitch);
@@ -1196,9 +1201,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         SDL_UnlockTexture(g_texture);
 
 #ifdef GBRT_PLATFORM_MIAUI
-        /* In the world the port draws its own screen (full-screen play field + HUD). */
-        if (!la_overlay_present(g_renderer, g_texture, g_ctx, fb_work,
-                                !(g_joypad_buttons & 0x01), !(g_joypad_buttons & 0x02)))
+        if (!la_overlay_present(g_renderer, g_texture, present_dst))
 #endif
         {
             SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);

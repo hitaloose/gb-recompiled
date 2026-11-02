@@ -127,6 +127,11 @@ static SDL_GameController* g_gamepad = NULL;
  * mapping — notably the DualShock on the OpenOrbis PS4 SDL2 port. */
 static SDL_Joystick* g_joystick = NULL;
 
+#ifdef GBRT_PLATFORM_MIAUI
+#include "la_extra_buttons.h"
+#include "la_overlay.h"
+#endif
+
 /* ============================================================================
  * Android on-screen touch controls
  * ========================================================================== */
@@ -459,6 +464,7 @@ void gb_platform_shutdown(void) {
 static int16_t g_audio_buffer[AUDIO_BUFFER_SIZE * 2]; /* *2 for stereo */
 static int g_audio_write_pos = 0;
 static int g_audio_read_pos = 0;
+static volatile unsigned g_audio_underruns = 0;
 
 static void sdl_audio_callback(void* userdata, Uint8* stream, int len) {
     (void)userdata;
@@ -474,6 +480,7 @@ static void sdl_audio_callback(void* userdata, Uint8* stream, int len) {
             /* Buffer underrun - silence */
             output[i*2] = 0;
             output[i*2+1] = 0;
+            g_audio_underruns++;
         }
     }
 }
@@ -485,12 +492,51 @@ static void on_audio_sample(GBContext* ctx, int16_t left, int16_t right) {
     left = (int16_t)(left * vol);
     right = (int16_t)(right * vol);
 
+#ifdef GBRT_PLATFORM_MIAUI
+    /* The frame loop is paced by the panel's vsync (60.46 Hz) while one frame
+     * is one Game Boy frame (59.73 Hz), so the game runs 1.2% fast and makes
+     * ~44640 samples per real second for a 44100 Hz device. Without this the
+     * ring fills up and samples get dropped every frame: audible pops.
+     * Resample by ~44100/44640 with linear interpolation, nudged +-0.5% by
+     * how full the ring is, so it hovers at half (dynamic rate control). */
+    {
+        static double acc = 0.0;
+        static int16_t prev_l = 0, prev_r = 0;
+        static unsigned drops = 0, frames = 0;
+        const double base = 44100.0 / (44100.0 * 60.46 / 59.7275);
+        int fill = (g_audio_write_pos - g_audio_read_pos + AUDIO_BUFFER_SIZE) % AUDIO_BUFFER_SIZE;
+        const int target = AUDIO_BUFFER_SIZE / 2;
+        double step = base * (1.0 + 0.005 * (double)(target - fill) / target);
+        acc += step;
+        if (acc >= 1.0) {
+            acc -= 1.0;
+            double t = 1.0 - acc / step;          /* where the output falls between prev and this sample */
+            int16_t ol = (int16_t)(prev_l + (left  - prev_l) * t);
+            int16_t orr = (int16_t)(prev_r + (right - prev_r) * t);
+            int next_pos = (g_audio_write_pos + 1) % AUDIO_BUFFER_SIZE;
+            if (next_pos != g_audio_read_pos) {
+                g_audio_buffer[g_audio_write_pos*2] = ol;
+                g_audio_buffer[g_audio_write_pos*2+1] = orr;
+                g_audio_write_pos = next_pos;
+            } else {
+                drops++;
+            }
+        }
+        prev_l = left; prev_r = right;
+        if (++frames >= 44100u * 10) {            /* every ~10 s of audio */
+            fprintf(stderr, "[AUDIO] ring %d/%d, dropped %u, underruns %u\n",
+                    fill, AUDIO_BUFFER_SIZE, drops, g_audio_underruns);
+            frames = 0; drops = 0; g_audio_underruns = 0;
+        }
+    }
+#else
     int next_pos = (g_audio_write_pos + 1) % AUDIO_BUFFER_SIZE;
     if (next_pos != g_audio_read_pos) {
         g_audio_buffer[g_audio_write_pos*2] = left;
         g_audio_buffer[g_audio_write_pos*2+1] = right;
         g_audio_write_pos = next_pos;
     }
+#endif
     /* Feed asset viewer waveform display / WAV recording */
     asset_viewer_push_audio(left, right);
 }
@@ -545,6 +591,22 @@ bool gb_platform_init(int scale) {
         SDL_WINDOWPOS_UNDEFINED,
         SDL_WINDOWPOS_UNDEFINED,
         dm.w, dm.h,
+        SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN
+    );
+#elif defined(GBRT_PLATFORM_MIAUI)
+    /* MiaUI (RG35XX): one fullscreen 640x480 window on the PVR EGL surface.
+     * The launcher passes the save folder (Saves/LinksAwakening) in
+     * LA_SAVE_DIR; without it saves land next to the executable. */
+    {
+        const char* sd = SDL_getenv("LA_SAVE_DIR");
+        if (sd && *sd) gb_platform_set_save_dir(sd);
+    }
+    SDL_ShowCursor(SDL_DISABLE);
+    g_window = SDL_CreateWindow(
+        GBRT_WINDOW_TITLE,
+        SDL_WINDOWPOS_UNDEFINED,
+        SDL_WINDOWPOS_UNDEFINED,
+        640, 480,
         SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN
     );
 #elif defined(__EMSCRIPTEN__)
@@ -631,7 +693,7 @@ bool gb_platform_init(int scale) {
     // Initialize asset viewer (needs renderer for texture creation)
     asset_viewer_init(g_renderer);
 
-#if !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
+#if !defined(__ANDROID__) && !defined(__EMSCRIPTEN__) && !defined(GBRT_PLATFORM_MIAUI)
     /* Apply saved window scale (desktop only — Android is fullscreen, and
      * the wasm canvas size is fixed at creation + styled by the HTML shell).
      * The window is grown by g_menu_h so the game keeps its full size under
@@ -706,6 +768,15 @@ bool gb_platform_poll_events(GBContext* ctx) {
         ImGui_ImplSDL2_ProcessEvent(&event);
 #endif
         if (event.type == SDL_QUIT) return false;
+#ifdef GBRT_PLATFORM_MIAUI
+        /* MENU (mapped to "guide" by MiaUI's SDL_GAMECONTROLLERCONFIG): the save
+         * screen in the world, quit back to MiaUI on the title/file screens
+         * (battery RAM is written by gb_context_destroy). */
+        if (event.type == SDL_CONTROLLERBUTTONDOWN
+            && event.cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE
+            && la_menu_button(ctx))
+            return false;
+#endif
         if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE
             && event.window.windowID == SDL_GetWindowID(g_window))
             return false;
@@ -878,6 +949,11 @@ bool gb_platform_poll_events(GBContext* ctx) {
         }
     }
 
+#ifdef GBRT_PLATFORM_MIAUI
+    /* Game-specific extra buttons (X/Y/L/R item slots), supplied by the port. */
+    if (ctx) la_extra_buttons_update(ctx, g_gamepad, &g_joypad_buttons, &g_joypad_dpad);
+#endif
+
     /* ---- Fire joypad interrupt on new presses ---- */
     if (ctx) {
         /* Detect newly pressed bits (went from 1→0, active low) */
@@ -912,6 +988,9 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
 #endif
 
     g_frame_count++;
+#ifdef GBRT_PLATFORM_MIAUI
+    la_overlay_snap_check(g_ctx, framebuffer);
+#endif
     
     /* Handle Screenshot Dumping */
     for (int i = 0; i < g_dump_count; i++) {
@@ -1040,6 +1119,22 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         android_dst.y = (oh - android_dst.h) / 2;
         present_dst = &android_dst;
     }
+#elif defined(GBRT_PLATFORM_MIAUI)
+    /* Largest integer scale that fits the panel (3x = 480x432 on 640x480),
+     * centred, so pixels stay square and sharp. */
+    static SDL_Rect miaui_dst;
+    {
+        int ow = 640, oh = 480;
+        SDL_GetRendererOutputSize(g_renderer, &ow, &oh);
+        int s = ow / GB_SCREEN_WIDTH;
+        if (oh / GB_SCREEN_HEIGHT < s) s = oh / GB_SCREEN_HEIGHT;
+        if (s < 1) s = 1;
+        miaui_dst.w = GB_SCREEN_WIDTH * s;
+        miaui_dst.h = GB_SCREEN_HEIGHT * s;
+        miaui_dst.x = (ow - miaui_dst.w) / 2;
+        miaui_dst.y = (oh - miaui_dst.h) / 2;
+        present_dst = &miaui_dst;
+    }
 #else
     if (g_menu_h > 0) {
         int ow = 0, oh = 0;
@@ -1100,8 +1195,16 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         memcpy(pixels, fb_work, GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT * sizeof(uint32_t));
         SDL_UnlockTexture(g_texture);
 
-        SDL_RenderClear(g_renderer);
-        SDL_RenderCopy(g_renderer, g_texture, NULL, present_dst);
+#ifdef GBRT_PLATFORM_MIAUI
+        /* In the world the port draws its own screen (full-screen play field + HUD). */
+        if (!la_overlay_present(g_renderer, g_texture, g_ctx, fb_work,
+                                !(g_joypad_buttons & 0x01), !(g_joypad_buttons & 0x02)))
+#endif
+        {
+            SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
+            SDL_RenderClear(g_renderer);
+            SDL_RenderCopy(g_renderer, g_texture, NULL, present_dst);
+        }
     }
 
     // ImGui Frame

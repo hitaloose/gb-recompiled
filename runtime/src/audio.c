@@ -106,6 +106,8 @@ typedef struct GBAudio {
     /* Sample Generation */
     uint32_t sample_timer;
     uint32_t sample_period; /* Cycles per sample */
+    uint64_t sample_acc;    /* 16.16 cycles towards the next output sample */
+    float hp_l, hp_r;       /* high-pass filter state (the output capacitor) */
     
 } GBAudio;
 
@@ -432,9 +434,8 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
     }
 }
 
-void gb_audio_step(GBContext* ctx, uint32_t cycles) {
-    GBAudio* apu = (GBAudio*)ctx->apu;
-    if (!apu || !(apu->nr52 & 0x80)) return;
+/* Advance the frame sequencer and the four channels by `cycles`. */
+static void apu_advance(GBAudio* apu, uint32_t cycles) {
     
     /* Advance Frame Sequencer (512 Hz) */
     /* 4194304 / 512 = 8192 cycles */
@@ -503,7 +504,6 @@ void gb_audio_step(GBContext* ctx, uint32_t cycles) {
     
     /* Generate Samples? */
     /* 4194304 Hz / 44100 Hz = 95.1 cycles/sample */
-    apu->sample_timer += cycles;
     
     /* Channel 1 Stepping */
     if (apu->ch1.enabled) {
@@ -573,8 +573,11 @@ void gb_audio_step(GBContext* ctx, uint32_t cycles) {
         }
     }
     
-    if (apu->sample_timer >= apu->sample_period) {
-        apu->sample_timer -= apu->sample_period;
+}
+
+/* Mix the channels as they are right now into one output sample. */
+static void apu_emit(GBContext* ctx, GBAudio* apu) {
+    {
         
         int16_t left = 0;
         int16_t right = 0;
@@ -645,7 +648,45 @@ void gb_audio_step(GBContext* ctx, uint32_t cycles) {
         left = left * (vol_l + 1) * 64;
         right = right * (vol_r + 1) * 64;
 
+        /* High-pass filter, like the capacitor on the real output: the mix
+         * above is all positive, so without it every note on/off or envelope
+         * step is a jump in DC level, i.e. a pop. Charge factor as SameBoy/
+         * gambatte: 0.999958 per 4 MHz cycle, ^95.1 per 44.1 kHz sample. */
+        {
+            const float charge = 0.996013f;
+            float in_l = (float)left, in_r = (float)right;
+            float out_l = in_l - apu->hp_l, out_r = in_r - apu->hp_r;
+            apu->hp_l = in_l - out_l * charge;
+            apu->hp_r = in_r - out_r * charge;
+            if (out_l > 32767.f) out_l = 32767.f; else if (out_l < -32768.f) out_l = -32768.f;
+            if (out_r > 32767.f) out_r = 32767.f; else if (out_r < -32768.f) out_r = -32768.f;
+            left = (int16_t)out_l;
+            right = (int16_t)out_r;
+        }
+
         gb_audio_callback(ctx, left, right);
+    }
+}
+
+/* Run the APU for `cycles` (4 MHz) and emit samples at exactly 44100 Hz.
+ * The caller can hand over hundreds of cycles at once (e.g. while the CPU
+ * waits in HALT), so the work is split at every sample boundary: each sample
+ * sees the channels as they are at that moment, and none are skipped. */
+void gb_audio_step(GBContext* ctx, uint32_t cycles) {
+    GBAudio* apu = (GBAudio*)ctx->apu;
+    if (!apu) return;
+    const uint64_t period = ((uint64_t)4194304 << 16) / 44100;   /* 95.108 cycles, 16.16 */
+    while (cycles) {
+        uint64_t need = (period - apu->sample_acc + 0xFFFF) >> 16;
+        if (need == 0) need = 1;
+        uint32_t chunk = cycles < need ? cycles : (uint32_t)need;
+        if (apu->nr52 & 0x80) apu_advance(apu, chunk);
+        apu->sample_acc += (uint64_t)chunk << 16;
+        cycles -= chunk;
+        if (apu->sample_acc >= period) {
+            apu->sample_acc -= period;
+            apu_emit(ctx, apu);
+        }
     }
 }
 

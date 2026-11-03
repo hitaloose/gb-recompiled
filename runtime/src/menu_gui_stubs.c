@@ -44,8 +44,8 @@ static const PadBind g_stub_pb[GB_BTN_COUNT] = {
     /* RIGHT */ { 14, -1, 0,   1 },  /* DPAD_RIGHT + LeftX+ */
     /* A     */ {  0, -1, -1, 0 },   /* A button */
     /* B     */ {  1, -1, -1, 0 },   /* B button */
-#ifdef GBRT_PLATFORM_MIAUI
-    /* X/Y are item buttons there (miaui/la_extra_buttons.c), not Select/Start */
+#ifdef GBRT_HANDHELD
+    /* X/Y are item buttons there (handheld/la_extra_buttons.c), not Select/Start */
     /* SELECT*/ {  4, -1, -1, 0 },   /* Back */
     /* START */ {  6, -1, -1, 0 },   /* Start */
 #else

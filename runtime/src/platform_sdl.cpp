@@ -127,10 +127,26 @@ static SDL_GameController* g_gamepad = NULL;
  * mapping — notably the DualShock on the OpenOrbis PS4 SDL2 port. */
 static SDL_Joystick* g_joystick = NULL;
 
-#ifdef GBRT_PLATFORM_MIAUI
+/* GBRT_HANDHELD: one fullscreen window on a small Linux handheld, no ImGui,
+ * with the port's handheld layer (controls, status bar, dialogs: handheld/ in
+ * linksawakening-portable). Each handheld target (MiaUI, ...) defines it from
+ * its build script, together with:
+ *   GBRT_SCREEN_W / GBRT_SCREEN_H  window size (default 640x480)
+ *   GBRT_DISPLAY_HZ                panel refresh the frame loop is paced by
+ *                                  (default 60.0; MiaUI's RG35XX is 60.46) */
+#ifdef GBRT_HANDHELD
 #include "la_extra_buttons.h"
 #include "la_overlay.h"
 #include <unistd.h>   /* fsync, sync */
+#ifndef GBRT_SCREEN_W
+#define GBRT_SCREEN_W 640
+#endif
+#ifndef GBRT_SCREEN_H
+#define GBRT_SCREEN_H 480
+#endif
+#ifndef GBRT_DISPLAY_HZ
+#define GBRT_DISPLAY_HZ 60.0
+#endif
 #endif
 
 /* ============================================================================
@@ -493,18 +509,19 @@ static void on_audio_sample(GBContext* ctx, int16_t left, int16_t right) {
     left = (int16_t)(left * vol);
     right = (int16_t)(right * vol);
 
-#ifdef GBRT_PLATFORM_MIAUI
-    /* The frame loop is paced by the panel's vsync (60.46 Hz) while one frame
-     * is one Game Boy frame (59.73 Hz), so the game runs 1.2% fast and makes
-     * ~44640 samples per real second for a 44100 Hz device. Without this the
-     * ring fills up and samples get dropped every frame: audible pops.
-     * Resample by ~44100/44640 with linear interpolation, nudged +-0.5% by
-     * how full the ring is, so it hovers at half (dynamic rate control). */
+#ifdef GBRT_HANDHELD
+    /* The frame loop is paced by the panel's vsync (GBRT_DISPLAY_HZ, 60.46 Hz
+     * on the RG35XX) while one frame is one Game Boy frame (59.73 Hz), so the
+     * game runs that much fast and makes ~44640 samples per real second for a
+     * 44100 Hz device. Without this the ring fills up and samples get dropped
+     * every frame: audible pops. Resample by 59.73/GBRT_DISPLAY_HZ with linear
+     * interpolation, nudged +-0.5% by how full the ring is, so it hovers at
+     * half (dynamic rate control). */
     {
         static double acc = 0.0;
         static int16_t prev_l = 0, prev_r = 0;
         static unsigned drops = 0, frames = 0;
-        const double base = 44100.0 / (44100.0 * 60.46 / 59.7275);
+        const double base = 59.7275 / GBRT_DISPLAY_HZ;
         int fill = (g_audio_write_pos - g_audio_read_pos + AUDIO_BUFFER_SIZE) % AUDIO_BUFFER_SIZE;
         const int target = AUDIO_BUFFER_SIZE / 2;
         double step = base * (1.0 + 0.005 * (double)(target - fill) / target);
@@ -594,10 +611,10 @@ bool gb_platform_init(int scale) {
         dm.w, dm.h,
         SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN
     );
-#elif defined(GBRT_PLATFORM_MIAUI)
-    /* MiaUI (RG35XX): one fullscreen 640x480 window on the PVR EGL surface.
-     * The launcher passes the save folder (Saves/LinksAwakening) in
-     * LA_SAVE_DIR; without it saves land next to the executable. */
+#elif defined(GBRT_HANDHELD)
+    /* Handhelds: one fullscreen window (640x480 on MiaUI's RG35XX, a PVR EGL
+     * surface). The launcher passes the save folder in LA_SAVE_DIR; without
+     * it saves land next to the executable. */
     {
         const char* sd = SDL_getenv("LA_SAVE_DIR");
         if (sd && *sd) gb_platform_set_save_dir(sd);
@@ -607,7 +624,7 @@ bool gb_platform_init(int scale) {
         GBRT_WINDOW_TITLE,
         SDL_WINDOWPOS_UNDEFINED,
         SDL_WINDOWPOS_UNDEFINED,
-        640, 480,
+        GBRT_SCREEN_W, GBRT_SCREEN_H,
         SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN
     );
 #elif defined(__EMSCRIPTEN__)
@@ -694,7 +711,7 @@ bool gb_platform_init(int scale) {
     // Initialize asset viewer (needs renderer for texture creation)
     asset_viewer_init(g_renderer);
 
-#if !defined(__ANDROID__) && !defined(__EMSCRIPTEN__) && !defined(GBRT_PLATFORM_MIAUI)
+#if !defined(__ANDROID__) && !defined(__EMSCRIPTEN__) && !defined(GBRT_HANDHELD)
     /* Apply saved window scale (desktop only — Android is fullscreen, and
      * the wasm canvas size is fixed at creation + styled by the HTML shell).
      * The window is grown by g_menu_h so the game keeps its full size under
@@ -769,7 +786,7 @@ bool gb_platform_poll_events(GBContext* ctx) {
         ImGui_ImplSDL2_ProcessEvent(&event);
 #endif
         if (event.type == SDL_QUIT) return false;
-#ifdef GBRT_PLATFORM_MIAUI
+#ifdef GBRT_HANDHELD
         /* MENU (mapped to "guide" by MiaUI's SDL_GAMECONTROLLERCONFIG): the save
          * screen in the world, quit back to MiaUI on the title/file screens
          * (battery RAM is written by gb_context_destroy). */
@@ -950,8 +967,8 @@ bool gb_platform_poll_events(GBContext* ctx) {
         }
     }
 
-#ifdef GBRT_PLATFORM_MIAUI
-    /* Game-specific extra buttons (X/Y/L/R item slots), supplied by the port. */
+#ifdef GBRT_HANDHELD
+    /* Game-specific controls (Switch-style layout), supplied by the port. */
     if (ctx) la_extra_buttons_update(ctx, g_gamepad, &g_joypad_buttons, &g_joypad_dpad);
 #endif
 
@@ -989,7 +1006,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
 #endif
 
     g_frame_count++;
-#ifdef GBRT_PLATFORM_MIAUI
+#ifdef GBRT_HANDHELD
     la_overlay_snap_check(g_ctx, framebuffer);
 #endif
     
@@ -1017,7 +1034,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
                   g_frame_count, has_content, framebuffer[0]);
     }
     
-#ifdef GBRT_PLATFORM_MIAUI
+#ifdef GBRT_HANDHELD
     /* Write the battery RAM as soon as the game has finished changing it
      * (RAM disabled again), instead of every 5 s: a save is then on disk
      * a frame after the game wrote it. */
@@ -1145,23 +1162,23 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         android_dst.y = (oh - android_dst.h) / 2;
         present_dst = &android_dst;
     }
-#elif defined(GBRT_PLATFORM_MIAUI)
+#elif defined(GBRT_HANDHELD)
     /* As large as the panel allows with the 10:9 aspect (533x480 on 640x480),
-     * centred; the port scales it sharp-bilinear (miaui/la_overlay.c). */
-    static SDL_Rect miaui_dst;
+     * centred; the port scales it sharp-bilinear (handheld/la_overlay.c). */
+    static SDL_Rect handheld_dst;
     {
-        int ow = 640, oh = 480;
+        int ow = GBRT_SCREEN_W, oh = GBRT_SCREEN_H;
         SDL_GetRendererOutputSize(g_renderer, &ow, &oh);
         if (ow * GB_SCREEN_HEIGHT > oh * GB_SCREEN_WIDTH) {
-            miaui_dst.h = oh;
-            miaui_dst.w = oh * GB_SCREEN_WIDTH / GB_SCREEN_HEIGHT;
+            handheld_dst.h = oh;
+            handheld_dst.w = oh * GB_SCREEN_WIDTH / GB_SCREEN_HEIGHT;
         } else {
-            miaui_dst.w = ow;
-            miaui_dst.h = ow * GB_SCREEN_HEIGHT / GB_SCREEN_WIDTH;
+            handheld_dst.w = ow;
+            handheld_dst.h = ow * GB_SCREEN_HEIGHT / GB_SCREEN_WIDTH;
         }
-        miaui_dst.x = (ow - miaui_dst.w) / 2;
-        miaui_dst.y = (oh - miaui_dst.h) / 2;
-        present_dst = &miaui_dst;
+        handheld_dst.x = (ow - handheld_dst.w) / 2;
+        handheld_dst.y = (oh - handheld_dst.h) / 2;
+        present_dst = &handheld_dst;
     }
 #else
     if (g_menu_h > 0) {
@@ -1217,7 +1234,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         SDL_RenderCopy(g_renderer, g_texture_2x, NULL, present_dst);
     } else {
         /* Nearest or Bilinear: use 1x texture */
-#ifdef GBRT_PLATFORM_MIAUI
+#ifdef GBRT_HANDHELD
         la_overlay_patch_fb(g_ctx, fb_work);   /* status bar B/A -> Y/X */
 #endif
         void* pixels;
@@ -1226,7 +1243,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         memcpy(pixels, fb_work, GB_SCREEN_WIDTH * GB_SCREEN_HEIGHT * sizeof(uint32_t));
         SDL_UnlockTexture(g_texture);
 
-#ifdef GBRT_PLATFORM_MIAUI
+#ifdef GBRT_HANDHELD
         if (!la_overlay_present(g_renderer, g_texture, present_dst))
 #endif
         {
@@ -1598,7 +1615,7 @@ static bool sdl_save_battery_ram(GBContext* ctx, const char* rom_name, const voi
     (void)ctx;
     char filename[512];
     sdl_get_save_path(filename, sizeof(filename), rom_name);
-#ifdef GBRT_PLATFORM_MIAUI
+#ifdef GBRT_HANDHELD
     /* Write a temp file, flush it to the SD card, then rename over the old
      * save: a power-off mid-write can't leave a truncated .sav behind. */
     char tmp[530];

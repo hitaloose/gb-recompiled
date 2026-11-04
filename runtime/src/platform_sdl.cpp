@@ -137,6 +137,7 @@ static SDL_Joystick* g_joystick = NULL;
 #ifdef GBRT_HANDHELD
 #include "la_extra_buttons.h"
 #include "la_overlay.h"
+#include "la_settings.h"
 #include <unistd.h>   /* fsync, sync */
 #ifndef GBRT_SCREEN_W
 #define GBRT_SCREEN_W 640
@@ -752,6 +753,38 @@ static const uint8_t gb_btn_buttons_mask[GB_BTN_COUNT] = {
     0x01, 0x02, 0x04, 0x08   /* A, B, Select, Start */
 };
 
+#ifdef GBRT_HANDHELD
+static const uint32_t* g_last_fb;   /* the frame shown while the options screen is open */
+
+/* Runs the options screen over the frozen frame, audio paused; returns false
+ * when the player picked QUIT GAME. On close it waits (up to ~1 s) for the
+ * button that closed it to be released, so the game doesn't get it. */
+static bool handheld_options_loop(void) {
+    if (g_audio_device) SDL_PauseAudioDevice(g_audio_device, 1);
+    bool quit = false;
+    int release_frames = 0;
+    while (!quit) {
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT || la_settings_event(&e)) quit = true;
+        }
+        if (quit) break;
+        if (!la_settings_is_open()) {
+            bool held = false;
+            for (int b = 0; g_gamepad && b < SDL_CONTROLLER_BUTTON_MAX; b++)
+                if (SDL_GameControllerGetButton(g_gamepad, (SDL_GameControllerButton)b)) held = true;
+            if (!held || ++release_frames > 60) break;
+        }
+        Uint32 t0 = SDL_GetTicks();
+        if (g_last_fb) gb_platform_render_frame(g_last_fb);
+        Uint32 dt = SDL_GetTicks() - t0;
+        if (dt < 16) SDL_Delay(16 - dt);   /* in case present doesn't wait for vsync */
+    }
+    if (g_audio_device) SDL_PauseAudioDevice(g_audio_device, 0);
+    return !quit;
+}
+#endif
+
 bool gb_platform_poll_events(GBContext* ctx) {
     g_ctx = ctx;
 
@@ -788,12 +821,12 @@ bool gb_platform_poll_events(GBContext* ctx) {
         if (event.type == SDL_QUIT) return false;
 #ifdef GBRT_HANDHELD
         /* MENU (mapped to "guide" by MiaUI's SDL_GAMECONTROLLERCONFIG): the save
-         * screen in the world, quit back to MiaUI on the title/file screens
-         * (battery RAM is written by gb_context_destroy). */
+         * screen in the world, the options screen (with QUIT GAME) on the
+         * title/file screens (handheld/la_settings.c). */
         if (event.type == SDL_CONTROLLERBUTTONDOWN
             && event.cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE
             && la_menu_button(ctx))
-            return false;
+            la_settings_open();
 #endif
         if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE
             && event.window.windowID == SDL_GetWindowID(g_window))
@@ -853,6 +886,12 @@ bool gb_platform_poll_events(GBContext* ctx) {
             g_gamepad = NULL;
         }
     }
+
+#ifdef GBRT_HANDHELD
+    /* Options screen: the game is paused until it closes (false: QUIT GAME). */
+    if (la_settings_is_open() && !handheld_options_loop())
+        return false;
+#endif
 
     /* ================================================================
      * POLL-BASED INPUT: rebuild joypad state from scratch every frame.
@@ -1007,6 +1046,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
 
     g_frame_count++;
 #ifdef GBRT_HANDHELD
+    g_last_fb = framebuffer;
     la_overlay_snap_check(g_ctx, framebuffer);
 #endif
     
@@ -1236,6 +1276,8 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         /* Nearest or Bilinear: use 1x texture */
 #ifdef GBRT_HANDHELD
         la_overlay_patch_fb(g_ctx, fb_work);   /* status bar B/A -> Y/X */
+        la_settings_apply_color(fb_work);      /* colour correction (options screen) */
+        la_settings_draw(fb_work);             /* the options screen, when open */
 #endif
         void* pixels;
         int pitch;
@@ -1244,7 +1286,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         SDL_UnlockTexture(g_texture);
 
 #ifdef GBRT_HANDHELD
-        if (!la_overlay_present(g_renderer, g_texture, present_dst))
+        if (la_settings_nearest() || !la_overlay_present(g_renderer, g_texture, present_dst))
 #endif
         {
             SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);

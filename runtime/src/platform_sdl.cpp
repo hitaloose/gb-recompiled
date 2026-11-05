@@ -139,6 +139,7 @@ static SDL_Joystick* g_joystick = NULL;
 #include "la_overlay.h"
 #include "la_settings.h"
 #include "la_lcd.h"
+#include "la_music.h"
 #include <unistd.h>   /* fsync, sync */
 #ifndef GBRT_SCREEN_W
 #define GBRT_SCREEN_W 640
@@ -1049,6 +1050,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
 #ifdef GBRT_HANDHELD
     g_last_fb = framebuffer;
     la_overlay_snap_check(g_ctx, framebuffer);
+    la_music_frame(g_ctx);                     /* custom music (options screen) */
 #endif
     
     /* Handle Screenshot Dumping */

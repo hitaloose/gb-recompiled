@@ -138,6 +138,7 @@ static SDL_Joystick* g_joystick = NULL;
 #include "la_extra_buttons.h"
 #include "la_overlay.h"
 #include "la_settings.h"
+#include "la_lcd.h"
 #include <unistd.h>   /* fsync, sync */
 #ifndef GBRT_SCREEN_W
 #define GBRT_SCREEN_W 640
@@ -1279,13 +1280,19 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         SDL_UnlockTexture(g_texture);
 
 #ifdef GBRT_HANDHELD
-        if (la_settings_plain_scale() || !la_overlay_present(g_renderer, g_texture, present_dst))
+        la_lcd_prepare(g_renderer, fb_work);   /* reflective LCD layers (options screen) */
+        bool handheld_linear = !la_settings_plain_scale() && la_overlay_present(g_renderer, g_texture, present_dst);
+        if (!handheld_linear)
 #endif
         {
             SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
             SDL_RenderClear(g_renderer);
             SDL_RenderCopy(g_renderer, g_texture, NULL, present_dst);
         }
+#ifdef GBRT_HANDHELD
+        la_lcd_draw(g_renderer, present_dst, handheld_linear);
+        la_overlay_snap_out(g_renderer);
+#endif
     }
 
     // ImGui Frame

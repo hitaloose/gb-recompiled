@@ -1203,21 +1203,14 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         present_dst = &android_dst;
     }
 #elif defined(GBRT_HANDHELD)
-    /* As large as the panel allows with the 10:9 aspect (533x480 on 640x480),
-     * centred; the port scales it sharp-bilinear (handheld/la_overlay.c). */
+    /* Size and place from the port's ASPECT option (handheld/la_settings.c:
+     * pixel perfect, 10:9 as large as fits, or full panel); the port scales
+     * it sharp-bilinear (handheld/la_overlay.c) unless that's plain nearest. */
     static SDL_Rect handheld_dst;
     {
         int ow = GBRT_SCREEN_W, oh = GBRT_SCREEN_H;
         SDL_GetRendererOutputSize(g_renderer, &ow, &oh);
-        if (ow * GB_SCREEN_HEIGHT > oh * GB_SCREEN_WIDTH) {
-            handheld_dst.h = oh;
-            handheld_dst.w = oh * GB_SCREEN_WIDTH / GB_SCREEN_HEIGHT;
-        } else {
-            handheld_dst.w = ow;
-            handheld_dst.h = ow * GB_SCREEN_HEIGHT / GB_SCREEN_WIDTH;
-        }
-        handheld_dst.x = (ow - handheld_dst.w) / 2;
-        handheld_dst.y = (oh - handheld_dst.h) / 2;
+        la_settings_present_rect(ow, oh, &handheld_dst.x, &handheld_dst.y, &handheld_dst.w, &handheld_dst.h);
         present_dst = &handheld_dst;
     }
 #else
@@ -1286,7 +1279,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         SDL_UnlockTexture(g_texture);
 
 #ifdef GBRT_HANDHELD
-        if (la_settings_nearest() || !la_overlay_present(g_renderer, g_texture, present_dst))
+        if (la_settings_plain_scale() || !la_overlay_present(g_renderer, g_texture, present_dst))
 #endif
         {
             SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);

@@ -132,8 +132,11 @@ static SDL_Joystick* g_joystick = NULL;
  * linksawakening-portable). Each handheld target (MiaUI, ...) defines it from
  * its build script, together with:
  *   GBRT_SCREEN_W / GBRT_SCREEN_H  window size (default 640x480)
- *   GBRT_DISPLAY_HZ                panel refresh the frame loop is paced by
- *                                  (default 60.0; MiaUI's RG35XX is 60.46) */
+ *   GBRT_DISPLAY_HZ                first guess of the panel refresh the frame
+ *                                  loop is paced by (default 60.0); the real
+ *                                  rate is measured while running (it differs
+ *                                  per unit: 60.46 and 59.96 Hz were seen on
+ *                                  RG35XX), see display_track */
 #ifdef GBRT_HANDHELD
 #include "la_extra_buttons.h"
 #include "la_overlay.h"
@@ -150,6 +153,35 @@ static SDL_Joystick* g_joystick = NULL;
 #ifndef GBRT_DISPLAY_HZ
 #define GBRT_DISPLAY_HZ 60.0
 #endif
+/* The panel refresh, measured by display_track; the audio resampler follows it. */
+static double g_display_hz = GBRT_DISPLAY_HZ;
+
+/* Called after each present. With vsync on, the time between presents is a
+ * whole number of panel periods (2 when a frame missed vsync), so count periods
+ * rather than presents over ~2 s windows and smooth the result. A window with a
+ * stall (loading, menu, sleep) is thrown away. */
+static void display_track(void) {
+    static Uint64 last, win_ticks;
+    static unsigned win_periods;
+    static bool logged;
+    Uint64 now = SDL_GetPerformanceCounter();
+    const double freq = (double)SDL_GetPerformanceFrequency();
+    double gap = last ? (double)(now - last) / freq : 0.0;
+    last = now;
+    unsigned periods = (unsigned)(gap * g_display_hz + 0.5);
+    if (!g_vsync || gap <= 0.0 || gap > 0.1 || periods == 0) { win_ticks = 0; win_periods = 0; return; }
+    win_ticks += (Uint64)(gap * freq);
+    win_periods += periods;
+    if (win_periods < 120) return;
+    double hz = (double)win_periods * freq / (double)win_ticks;
+    win_ticks = 0; win_periods = 0;
+    if (hz < 50.0 || hz > 70.0) return;                /* present not waiting for vsync */
+    double prev = g_display_hz;
+    g_display_hz = logged ? g_display_hz * 0.75 + hz * 0.25 : hz;
+    if (!logged || (int)(prev * 10 + 0.5) != (int)(g_display_hz * 10 + 0.5))
+        fprintf(stderr, "[SDL] display %.2f Hz (window %.3f)\n", g_display_hz, hz);
+    logged = true;
+}
 #endif
 
 /* ============================================================================
@@ -513,18 +545,19 @@ static void on_audio_sample(GBContext* ctx, int16_t left, int16_t right) {
     right = (int16_t)(right * vol);
 
 #ifdef GBRT_HANDHELD
-    /* The frame loop is paced by the panel's vsync (GBRT_DISPLAY_HZ, 60.46 Hz
-     * on the RG35XX) while one frame is one Game Boy frame (59.73 Hz), so the
-     * game runs that much fast and makes ~44640 samples per real second for a
-     * 44100 Hz device. Without this the ring fills up and samples get dropped
-     * every frame: audible pops. Resample by 59.73/GBRT_DISPLAY_HZ with linear
-     * interpolation, nudged +-0.5% by how full the ring is, so it hovers at
+    /* The frame loop is paced by the panel's vsync (g_display_hz, measured:
+     * 59.96 to 60.46 Hz on RG35XX units) while one frame is one Game Boy frame
+     * (59.73 Hz), so the game runs that much fast and makes up to ~44640
+     * samples per real second for a 44100 Hz device. Without this the ring
+     * fills up (or runs dry) and samples get dropped every frame: audible pops.
+     * Resample by 59.73/g_display_hz with linear interpolation, nudged +-0.5%
+     * by how full the ring is, so it hovers at
      * half (dynamic rate control). */
     {
         static double acc = 0.0;
         static int16_t prev_l = 0, prev_r = 0;
         static unsigned drops = 0, frames = 0;
-        const double base = 59.7275 / GBRT_DISPLAY_HZ;
+        const double base = 59.7275 / g_display_hz;
         int fill = (g_audio_write_pos - g_audio_read_pos + AUDIO_BUFFER_SIZE) % AUDIO_BUFFER_SIZE;
         const int target = AUDIO_BUFFER_SIZE / 2;
         double step = base * (1.0 + 0.005 * (double)(target - fill) / target);
@@ -1367,6 +1400,9 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
 #endif
 
     SDL_RenderPresent(g_renderer);
+#ifdef GBRT_HANDHELD
+    display_track();
+#endif
 }
 
 uint8_t gb_platform_get_joypad(void) {

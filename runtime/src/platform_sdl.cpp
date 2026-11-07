@@ -134,9 +134,8 @@ static SDL_Joystick* g_joystick = NULL;
  *   GBRT_SCREEN_W / GBRT_SCREEN_H  window size (default 640x480)
  *   GBRT_DISPLAY_HZ                first guess of the panel refresh the frame
  *                                  loop is paced by (default 60.0); the real
- *                                  rate is measured while running (it differs
- *                                  per unit: 60.46 and 59.96 Hz were seen on
- *                                  RG35XX), see display_track */
+ *                                  rate is measured while running (60.46 Hz
+ *                                  on the RG35XX), see display_track */
 #ifdef GBRT_HANDHELD
 #include "la_extra_buttons.h"
 #include "la_overlay.h"
@@ -158,7 +157,8 @@ static double g_display_hz = GBRT_DISPLAY_HZ;
 
 /* Called after each present. With vsync on, the time between presents is a
  * whole number of panel periods (2 when a frame missed vsync), so count periods
- * rather than presents over ~2 s windows and smooth the result. A window with a
+ * rather than presents (one miss per window would read 60.46 Hz as 59.96) over
+ * ~2 s windows and smooth the result. A window with a
  * stall (loading, menu, sleep) is thrown away. */
 static void display_track(void) {
     static Uint64 last, win_ticks;
@@ -546,7 +546,7 @@ static void on_audio_sample(GBContext* ctx, int16_t left, int16_t right) {
 
 #ifdef GBRT_HANDHELD
     /* The frame loop is paced by the panel's vsync (g_display_hz, measured:
-     * 59.96 to 60.46 Hz on RG35XX units) while one frame is one Game Boy frame
+     * 60.46 Hz on the RG35XX) while one frame is one Game Boy frame
      * (59.73 Hz), so the game runs that much fast and makes up to ~44640
      * samples per real second for a 44100 Hz device. Without this the ring
      * fills up (or runs dry) and samples get dropped every frame: audible pops.

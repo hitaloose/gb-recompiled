@@ -141,6 +141,7 @@ static SDL_Joystick* g_joystick = NULL;
 #include "la_overlay.h"
 #include "la_settings.h"
 #include "la_lcd.h"
+#include "la_bezel.h"
 #include <unistd.h>   /* fsync, sync */
 #ifndef GBRT_SCREEN_W
 #define GBRT_SCREEN_W 640
@@ -1324,6 +1325,7 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
         }
 #ifdef GBRT_HANDHELD
         la_lcd_draw(g_renderer, present_dst, handheld_linear);
+        la_bezel_draw(g_renderer);             /* screen overlay PNG (GRID option) */
         la_overlay_snap_out(g_renderer);
 #endif
     }

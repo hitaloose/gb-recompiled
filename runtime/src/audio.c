@@ -575,10 +575,6 @@ static void apu_advance(GBAudio* apu, uint32_t cycles) {
     
 }
 
-/* Ports can silence channels and add their own audio (audio.h). */
-uint8_t gb_audio_mute_mask;
-void (*gb_audio_mix_hook)(int* left, int* right, int vol_l, int vol_r);
-
 /* Mix the channels as they are right now into one output sample. */
 static void apu_emit(GBContext* ctx, GBAudio* apu) {
     {
@@ -587,7 +583,7 @@ static void apu_emit(GBContext* ctx, GBAudio* apu) {
         int16_t right = 0;
         
         /* Channel 1 Output */
-        if (!(gb_audio_mute_mask & 1) && apu->ch1.enabled && (apu->ch1.nr12 & 0xF0)) { // DAC ON
+        if (apu->ch1.enabled && (apu->ch1.nr12 & 0xF0)) { // DAC ON
              int duty = (apu->ch1.nr11 >> 6) & 3;
              int output = DUTY_CYCLES[duty][apu->ch1.wave_pos];
              
@@ -599,7 +595,7 @@ static void apu_emit(GBContext* ctx, GBAudio* apu) {
         }
         
         /* Channel 2 Output */
-        if (!(gb_audio_mute_mask & 2) && apu->ch2.enabled && (apu->ch2.nr22 & 0xF0)) { // DAC ON
+        if (apu->ch2.enabled && (apu->ch2.nr22 & 0xF0)) { // DAC ON
              int duty = (apu->ch2.nr21 >> 6) & 3;
              int output = DUTY_CYCLES[duty][apu->ch2.wave_pos];
              
@@ -611,7 +607,7 @@ static void apu_emit(GBContext* ctx, GBAudio* apu) {
         }
 
         /* Channel 3 Output */
-        if (!(gb_audio_mute_mask & 4) && apu->ch3.enabled && (apu->ch3.nr30 & 0x80)) { // DAC ON
+        if (apu->ch3.enabled && (apu->ch3.nr30 & 0x80)) { // DAC ON
              /* Get wave sample (4-bit) */
              uint8_t byte = apu->ch3.wave_ram[apu->ch3.wave_pos / 2];
              uint8_t sample = (apu->ch3.wave_pos & 1) ? (byte & 0x0F) : (byte >> 4);
@@ -630,7 +626,7 @@ static void apu_emit(GBContext* ctx, GBAudio* apu) {
         }
 
         /* Channel 4 Output */
-        if (!(gb_audio_mute_mask & 8) && apu->ch4.enabled && (apu->ch4.nr42 & 0xF0)) { // DAC ON
+        if (apu->ch4.enabled && (apu->ch4.nr42 & 0xF0)) { // DAC ON
              bool output = !(apu->ch4.lfsr & 1); /* Output is inverted bit 0 */
              
              if (output) {
@@ -649,9 +645,8 @@ static void apu_emit(GBContext* ctx, GBAudio* apu) {
         int vol_l = (apu->nr50 >> 4) & 7;
         int vol_r = (apu->nr50 & 7);
         
-        int mix_l = left * (vol_l + 1) * 64;
-        int mix_r = right * (vol_r + 1) * 64;
-        if (gb_audio_mix_hook) gb_audio_mix_hook(&mix_l, &mix_r, vol_l, vol_r);
+        left = left * (vol_l + 1) * 64;
+        right = right * (vol_r + 1) * 64;
 
         /* High-pass filter, like the capacitor on the real output: the mix
          * above is all positive, so without it every note on/off or envelope
@@ -659,7 +654,7 @@ static void apu_emit(GBContext* ctx, GBAudio* apu) {
          * gambatte: 0.999958 per 4 MHz cycle, ^95.1 per 44.1 kHz sample. */
         {
             const float charge = 0.996013f;
-            float in_l = (float)mix_l, in_r = (float)mix_r;
+            float in_l = (float)left, in_r = (float)right;
             float out_l = in_l - apu->hp_l, out_r = in_r - apu->hp_r;
             apu->hp_l = in_l - out_l * charge;
             apu->hp_r = in_r - out_r * charge;

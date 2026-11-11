@@ -59,13 +59,6 @@ void gb_audio_div_reset(void* apu);
  */
 void gb_audio_get_samples(void* apu, int16_t* left, int16_t* right);
 
-/* For ports: bit n set silences channel n+1 in the mix; the hook, when set,
- * adds the port's own audio to each output sample (left/right before the
- * high-pass filter, in the same scale: 16-bit full range; vol_l/vol_r are
- * NR50's master volumes 0-7, so the added audio can follow the game's fades). */
-extern uint8_t gb_audio_mute_mask;
-extern void (*gb_audio_mix_hook)(int* left, int* right, int vol_l, int vol_r);
-
 #ifdef __cplusplus
 }
 #endif
